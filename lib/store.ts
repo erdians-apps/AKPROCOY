@@ -27,7 +27,10 @@ function computeStatus(total: number, terbayar: number): HutangPiutangStatus { i
 interface AppState {
   appUsers: AppUser[]; currentUser: AppUser | null;
   coa: COA[]; jurnal: Jurnal[]; mutasi: Mutasi[]; kontak: Kontak[]; aset: Aset[];
-  setAset: (aset: Aset[]) => void;
+  
+  // PERBAIKAN 1: Tipe data disesuaikan dengan halaman Aset (3 parameter)
+  setAset: (jurnalRef: string, masaManfaat: number, tipeMasa: 'bulan' | 'tahun') => Promise<void>;
+  
   kategoriMutasi: KategoriMutasi[]; kategoriAkun: KategoriAkun[]; hutang: Hutang[]; piutang: Piutang[];
   isAuthenticated: boolean; loading: boolean;
 
@@ -36,19 +39,15 @@ interface AppState {
   fetchAllData: () => Promise<void>;
   fetchJurnalByDate: (from: string, to: string) => Promise<void>;
   
-  // Developer Management
   fetchAppUsers: () => Promise<void>;
   updateUserAccess: (id: string, updates: Partial<AppUser>) => Promise<void>;
   
-  // Sorting (Reorder)
   moveKategoriAkun: (id: string, direction: 'up' | 'down') => Promise<void>;
   moveKategoriMutasi: (id: string, direction: 'up' | 'down') => Promise<void>;
 
-  // CRUD
   addCOA: (item: COA) => Promise<void>; updateCOA: (kode: string, item: COA) => Promise<void>; deleteCOA: (kode: string) => Promise<void>;
   addKategoriAkun: (item: KategoriAkun) => Promise<void>; updateKategoriAkun: (id: string, item: KategoriAkun) => Promise<void>; deleteKategoriAkun: (id: string) => Promise<void>;
   addKategoriMutasi: (item: KategoriMutasi) => Promise<void>; updateKategoriMutasi: (id: string, item: KategoriMutasi) => Promise<void>; deleteKategoriMutasi: (id: string) => Promise<void>;
-  // ... Tambahkan definisi standar CRUD lainnya untuk file ini ...
 }
 
 export const useStore = create<AppState>()((set, get) => ({
@@ -56,7 +55,28 @@ export const useStore = create<AppState>()((set, get) => ({
   coa: [], jurnal: [], mutasi: [], kontak: [], aset: [], kategoriMutasi: [], kategoriAkun: [], hutang: [], piutang: [],
   isAuthenticated: false, loading: true,
 
-  setAset: (aset) => set({ aset }), 
+  // PERBAIKAN 2: Implementasi fungsi setAset dan simpan ke Supabase
+  setAset: async (jurnalRef, masaManfaat, tipeMasa) => {
+    set((state) => {
+      const exists = state.aset.find(a => a.id === jurnalRef);
+      if (exists) {
+        return { aset: state.aset.map(a => a.id === jurnalRef ? { ...a, masaManfaat, tipeMasa } : a) };
+      }
+      return { aset: [...state.aset, { id: jurnalRef, jurnalRef, masaManfaat, tipeMasa }] };
+    });
+
+    const { data } = await supabase.from('aset_tetap').select('id').eq('jurnal_ref', jurnalRef).maybeSingle();
+    if (data) {
+      await supabase.from('aset_tetap').update({ masa_manfaat: masaManfaat, tipe_masa: tipeMasa }).eq('jurnal_ref', jurnalRef);
+    } else {
+      await supabase.from('aset_tetap').insert({
+        id: `AST-${Date.now()}`,
+        jurnal_ref: jurnalRef,
+        masa_manfaat: masaManfaat,
+        tipe_masa: tipeMasa
+      });
+    }
+  },
 
   login: async (email, pass) => {
     set({ loading: true });
@@ -90,7 +110,7 @@ export const useStore = create<AppState>()((set, get) => ({
   },
 
   updateUserAccess: async (id, updates) => {
-    set((s) => ({ appUsers: s.appUsers.map(u => u.id === id ? { ...u, ...updates } : u) })); // Optimistic UI
+    set((s) => ({ appUsers: s.appUsers.map(u => u.id === id ? { ...u, ...updates } : u) })); 
     await supabase.from('app_users').update(updates).eq('id', id);
     toast.success('Akses user diperbarui');
   },
@@ -101,11 +121,9 @@ export const useStore = create<AppState>()((set, get) => ({
       const { data: session } = await supabase.auth.getSession();
       if (!session.session) { set({ isAuthenticated: false, loading: false }); return; }
 
-      // Get Current User Metadata
       const { data: me } = await supabase.from('app_users').select('*').eq('id', session.session.user.id).single();
       set({ currentUser: me, isAuthenticated: true });
 
-      // TEMPLATE AUTO-SEEDER: Jika Kategori Akun kosong, masukkan template default
       const { data: checkKat } = await supabase.from('kategori_akun').select('id').limit(1);
       if (!checkKat || checkKat.length === 0) {
         await supabase.from('kategori_akun').insert([
@@ -124,7 +142,8 @@ export const useStore = create<AppState>()((set, get) => ({
         ]);
       }
 
-      const [coaRes, katAkunRes, katMutasiRes, kontakRes, mutasiRes, hpRes, jurnalRes] = await Promise.all([
+      // PERBAIKAN 3: Jangan lupa menarik data tabel aset_tetap dari Supabase
+      const [coaRes, katAkunRes, katMutasiRes, kontakRes, mutasiRes, hpRes, jurnalRes, asetRes] = await Promise.all([
         supabase.from('coa').select('*').order('kode'),
         supabase.from('kategori_akun').select('*').order('urutan'),
         supabase.from('kategori_mutasi').select('*').order('urutan'),
@@ -132,30 +151,31 @@ export const useStore = create<AppState>()((set, get) => ({
         supabase.from('mutasi').select('*').order('tgl', { ascending: false }).limit(100),
         supabase.from('hutang_piutang').select('*').order('tgl'),
         supabase.from('jurnal').select('*, jurnal_lines(*)').order('tgl', { ascending: false }).limit(50), 
+        supabase.from('aset_tetap').select('*')
       ]);
 
       const coa: COA[] = (coaRes.data ?? []).map((r: any) => ({ kode: r.kode, nama: r.nama, tipe: r.tipe, kategori2: r.kategori, saldoNormal: r.saldo_normal }));
       const kategoriAkun: KategoriAkun[] = (katAkunRes.data ?? []).map((r: any) => ({ id: r.id, nama: r.nama, tipe: r.tipe, urutan: r.urutan }));
       const kategoriMutasi: KategoriMutasi[] = (katMutasiRes.data ?? []).map((r: any) => ({ id: r.id, nama: r.nama, iconName: r.icon_name, urutan: r.urutan }));
+      const mutasi: Mutasi[] = (mutasiRes.data ?? []).map((r: any) => ({ id: r.id, tgl: r.tgl, desc: r.deskripsi, akunKas: r.akun_kas, katTransaksi: r.kategori_mutasi_id, tipe: r.tipe, nominal: r.nominal, status: r.status }));
+      const jurnal: Jurnal[] = (jurnalRes.data ?? []).map((r: any) => ({ id: r.id, tgl: r.tgl, desc: r.deskripsi, lines: (r.jurnal_lines ?? []).map((l: any) => ({ kodeAkun: l.kode_akun, debit: l.debit, kredit: l.kredit })) }));
       
-      const mutasi: Mutasi[] = (mutasiRes.data ?? []).map((r: any) => ({
-        id: r.id, tgl: r.tgl, desc: r.deskripsi, akunKas: r.akun_kas, katTransaksi: r.kategori_mutasi_id,
-        tipe: r.tipe, nominal: r.nominal, status: r.status,
+      const aset: Aset[] = (asetRes.data ?? []).map((r: any) => ({
+        id: r.jurnal_ref, 
+        jurnalRef: r.jurnal_ref, 
+        masaManfaat: r.masa_manfaat, 
+        tipeMasa: r.tipe_masa 
       }));
 
-      const jurnal: Jurnal[] = (jurnalRes.data ?? []).map((r: any) => ({
-        id: r.id, tgl: r.tgl, desc: r.deskripsi, lines: (r.jurnal_lines ?? []).map((l: any) => ({ kodeAkun: l.kode_akun, debit: l.debit, kredit: l.kredit })),
-      }));
-
-      set({ coa, kategoriAkun, kategoriMutasi, mutasi, jurnal, loading: false });
+      // Aset sekarang ikut dimasukkan ke state
+      set({ coa, kategoriAkun, kategoriMutasi, mutasi, jurnal, aset, loading: false });
       if (me?.role === 'developer') get().fetchAppUsers();
 
     } catch (error: any) { set({ loading: false }); toast.error(`Gagal muat data: ${error.message}`); }
   },
 
-  fetchJurnalByDate: async (from, to) => { /* Sama dengan versi sebelumnya */ },
+  fetchJurnalByDate: async (from, to) => { },
 
-  // --- REORDERING (SORTING) OPTIMISTIC UI ---
   moveKategoriAkun: async (id, direction) => {
     const list = [...get().kategoriAkun].sort((a, b) => a.urutan - b.urutan);
     const idx = list.findIndex(k => k.id === id);
@@ -164,9 +184,8 @@ export const useStore = create<AppState>()((set, get) => ({
       const temp = list[idx].urutan;
       list[idx].urutan = list[swapIdx].urutan;
       list[swapIdx].urutan = temp;
-      set({ kategoriAkun: list.sort((a, b) => a.urutan - b.urutan) }); // UI Instan tanpa jeda
+      set({ kategoriAkun: list.sort((a, b) => a.urutan - b.urutan) }); 
       
-      // Simpan senyap ke DB
       await Promise.all([
         supabase.from('kategori_akun').update({ urutan: list[idx].urutan }).eq('id', list[idx].id),
         supabase.from('kategori_akun').update({ urutan: list[swapIdx].urutan }).eq('id', list[swapIdx].id)
@@ -191,13 +210,12 @@ export const useStore = create<AppState>()((set, get) => ({
     }
   },
 
-  // --- CONTOH OPTIMISTIC CRUD LAINNYA ---
   addCOA: async (item) => {
-    set((s) => ({ coa: [...s.coa, item] })); // Instant UI Update
+    set((s) => ({ coa: [...s.coa, item] }));
     const { error } = await supabase.from('coa').insert({
       kode: item.kode, nama: item.nama, tipe: item.tipe, kategori: item.kategori2, saldo_normal: item.saldoNormal,
     });
-    if (error) { toast.error("Gagal menyimpan COA"); get().fetchAllData(); } // Rollback if error
+    if (error) { toast.error("Gagal menyimpan COA"); get().fetchAllData(); } 
   },
 
   updateCOA: async (kode, item) => {
