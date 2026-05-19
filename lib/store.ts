@@ -27,6 +27,7 @@ function computeStatus(total: number, terbayar: number): HutangPiutangStatus { i
 interface AppState {
   appUsers: AppUser[]; currentUser: AppUser | null;
   coa: COA[]; jurnal: Jurnal[]; mutasi: Mutasi[]; kontak: Kontak[]; aset: Aset[];
+  setAset: (aset: Aset[]) => void;
   kategoriMutasi: KategoriMutasi[]; kategoriAkun: KategoriAkun[]; hutang: Hutang[]; piutang: Piutang[];
   isAuthenticated: boolean; loading: boolean;
 
@@ -54,6 +55,8 @@ export const useStore = create<AppState>()((set, get) => ({
   appUsers: [], currentUser: null,
   coa: [], jurnal: [], mutasi: [], kontak: [], aset: [], kategoriMutasi: [], kategoriAkun: [], hutang: [], piutang: [],
   isAuthenticated: false, loading: true,
+
+  setAset: (aset) => set({ aset }), 
 
   login: async (email, pass) => {
     set({ loading: true });
